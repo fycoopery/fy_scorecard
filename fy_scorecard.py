@@ -48,9 +48,10 @@ class fs_scorecard:
                 continue
             elif nunique_i <= 10:
                 #value_counts
-                xy_concat[i] = xy_concat[i].fillna(-9999)
+                xy_concat[i] = xy_concat[i].fillna("nan")
                 df_temp = xy_concat.groupby(i)[y_column].agg([pd.Series.sum,pd.Series.count]).reset_index()\
-                            .rename(columns = {"sum":"pos_count","count":"cat_total_count",i:"var_cat"})                    
+                            .rename(columns = {"sum":"pos_count","count":"cat_total_count",i:"var_cat"})
+                columns_bin_dict[i] = []
             else:
                 if type_i == "object":
                     print i,": too many values for discrete variables."
@@ -70,7 +71,9 @@ class fs_scorecard:
                     xy_concat[var_name_bin] = pd.cut(x[var_name],list_q2).astype("string")
                     df_temp = xy_concat.groupby(var_name_bin)[y_column].agg([pd.Series.sum,pd.Series.count]).reset_index()\
                             .rename(columns = {"sum":"pos_count","count":"cat_total_count",var_name_bin:"var_cat"})
-            columns_bin_dict[i] = list_q2
+                            
+                    columns_bin_dict[i] = list_q2
+                    
             df_temp["var_name"] = i
             df_temp["neg_count"] = df_temp["cat_total_count"] - df_temp["pos_count"]
             df_temp["p_ni"] = df_temp["neg_count"] / total_neg_count
@@ -86,15 +89,37 @@ class fs_scorecard:
                          'pos_count','neg_count','p_ni',	"p_y_total",
                          'p_yi','woe','iv_i']
         woe_t = woe_t[woe_show_cols]
+        woe_t["var_cat"]=woe_t["var_cat"].astype("string")
         iv_t = woe_t.groupby("var_name")["iv_i"].sum().reset_index().rename(columns = { "iv_i" :"iv"})
         filePath = self.workpath+"woe_t.xlsx"
         excel_writer = ExcelWriter(filePath)
         woe_t.to_excel(excel_writer,sheet_name="woe",index =False)
         iv_t.to_excel(excel_writer,sheet_name="iv",index =False)
         excel_writer.save()
+
         self.woe_t = woe_t
         self.iv_t = iv_t
         print filePath," generated;\n <name>.woe_t, <name>.iv_t available"
 
+
+    def get_woe_replaced_df(self):
+        x = self.x
+        woe_t = self.woe_t
+        df_binned = pd.DataFrame()
+        df_woe_replaced = pd.DataFrame()
+        columns_bin_dict = self.columns_bin_dict
+        for i in columns_bin_dict.keys():
+            if len(columns_bin_dict[i])>0:
+                df_binned[i] = pd.cut(x[i],columns_bin_dict[i]).astype("string")
+            else:
+                df_binned[i] = x[i].astype("string")
+        for i in df_binned.columns:
+            df_woe_value = woe_t[woe_t["var_name"]==i][["var_cat","woe"]]
+            df_woe_replaced[i] = df_binned.merge(df_woe_value,how="left",left_on=i,right_on="var_cat")["woe"]
+        
+        self.df_woe_replaced = df_woe_replaced
+        self.df_binned = df_binned
+        print "<name>.df_woe_replaced, <name>.df_binned available"
+        
 
 print "FY Scorecard ready!"
