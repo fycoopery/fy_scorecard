@@ -8,6 +8,8 @@ fy_scorecard.
 import pandas as pd
 import numpy as np
 from pandas import ExcelWriter
+import statsmodels.api as sm
+
 
 class fs_scorecard:
     def __init__(self,x,y,event=1,workpath = "./"):
@@ -120,6 +122,15 @@ class fs_scorecard:
         self.df_woe_replaced = df_woe_replaced
         self.df_binned = df_binned
         print "<name>.df_woe_replaced, <name>.df_binned available"
+
+    def genmodel(self, excluded_columns = []):
+        x = self.df_woe_replaced.drop(excluded_columns,axis = 1)
+        y = self.y.copy()
+        y[y==self.event] = 1
+        y[y<>self.event] = 0
+        self.model = sm.Logit(endog=y , exog=x)
+        self.result = self.model.fit()
+        print self.result.summary()
         
 
 print "FY Scorecard ready!"
