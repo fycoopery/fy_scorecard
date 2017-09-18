@@ -104,8 +104,12 @@ class fs_scorecard:
         print filePath," generated;\n <name>.woe_t, <name>.iv_t available"
 
 
-    def get_woe_replaced_df(self):
-        x = self.x
+    def get_woe_replaced_df(self , input_x = None):
+        if input_x is None:
+            x = self.x
+        else:
+            x = input_x
+
         woe_t = self.woe_t
         df_binned = pd.DataFrame()
         df_woe_replaced = pd.DataFrame()
@@ -118,19 +122,74 @@ class fs_scorecard:
         for i in df_binned.columns:
             df_woe_value = woe_t[woe_t["var_name"]==i][["var_cat","woe"]]
             df_woe_replaced[i] = df_binned.merge(df_woe_value,how="left",left_on=i,right_on="var_cat")["woe"]
-        
         self.df_woe_replaced = df_woe_replaced
         self.df_binned = df_binned
-        print "<name>.df_woe_replaced, <name>.df_binned available"
+        if input_x is None:
+            print "<name>.df_woe_replaced, <name>.df_binned available"
+        else:
+            return df_binned,df_woe_replaced
 
-    def genmodel(self, excluded_columns = []):
-        x = self.df_woe_replaced.drop(excluded_columns,axis = 1)
-        y = self.y.copy()
+
+    def gen_model(self, iv_lower_bound = 0.02,iv_upper_bound = 20,excluded_columns = []):
+        columns_iv = self.iv_t[(self.iv_t["iv"]>=iv_lower_bound) & (self.iv_t["iv"]<=iv_upper_bound)]["var_name"]
+        x = self.df_woe_replaced[columns_iv].drop(excluded_columns,axis = 1,errors = "ignore").reset_index(drop = True)
+        y = self.y.copy().reset_index(drop = True)
         y[y==self.event] = 1
         y[y<>self.event] = 0
+        self.y_event = y
         self.model = sm.Logit(endog=y , exog=x)
-        self.result = self.model.fit()
-        print self.result.summary()
+        self.model_result = self.model.fit()
+        print self.model_result.summary()
+
+    def gen_score(self, input_x = None, score_base = 600, odds_change_rt = 20):
+        base_score = score_base
+        base_rt = odds_change_rt
         
+        y_event = self.y_event
+        base_odds = (y_event.sum()+0.0)/(y_event.count()-y_event.sum())
+        reverse_base_odds = 1/base_odds
+        
+        p = base_rt/np.log(2)
+        q = base_score - base_rt*np.log(reverse_base_odds)/np.log(2)
+        
+        print "base_odds: ",base_odds
+        print "reverse_base_odds: ",reverse_base_odds
+        print "base_rt: ",base_rt
+        print "base_score: ",base_score
+        print "p: ",p
+        print "q: ",q
+
+        #生成df_scored
+        
+        params = self.model_result.params
+        df_params = params.reset_index().rename(columns={"index":"var_name",0:"params"})
+        
+        self.woe_t_scored = self.woe_t.merge(df_params,on="var_name",how="left")
+        woe_t2 = self.woe_t_scored
+        woe_t2["score"] = - woe_t2["params"] * woe_t2["woe"]*p
+        
+        #woe_t2 为得分概览
+        df_scored = pd.DataFrame()
+
+        if input_x is not None:
+            df_binned,df_woe_replaced = self.get_woe_replaced_df(input_x)
+        else:
+            df_binned = self.df_binned
+
+        for i in self.model.exog_names:
+        	print i 
+        	df_score_value = woe_t2[woe_t2["var_name"]==i][["var_cat","score"]]
+        	df_scored[i] = df_binned.merge(df_score_value,how="left",left_on=i,right_on="var_cat")["score"]
+
+        df_scored["final_score"] = df_scored.sum(axis = 1) + base_score
+        print df_scored["final_score"].describe()
+        if input_x is not None:
+            return df_scored
+        else:
+            self.df_scored = df_scored
+            print "<name>.df_scored, <name>.woe_t_scored available"
+
+        
+
 
 print "FY Scorecard ready!"
