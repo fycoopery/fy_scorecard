@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 from pandas import ExcelWriter
 import statsmodels.api as sm
-
+import matplotlib.pyplot as plt
 
 class fs_scorecard:
     def __init__(self,x,y,event=1,workpath = "./"):
@@ -130,6 +130,35 @@ class fs_scorecard:
             return df_binned,df_woe_replaced
 
 
+    def gen_woe_iv_plot(self):
+        woe_t = self.woe_t
+        iv_t = self.iv_t
+
+        var_cnt = iv_t.shape[0]
+        self.woe_iv_plot,axes = plt.subplots(nrows = var_cnt,ncols = 1)
+        self.woe_iv_plot.set_size_inches(15,10 * var_cnt)
+        ax_cnt = 0
+
+        for i in iv_t.sort_values(by = "iv" ,ascending=False)["var_name"]:
+            plt.subplot(var_cnt , 1 , ax_cnt+1)
+            woe_t_sample = woe_t[woe_t["var_name"]==i]
+            iv_value = iv_t[iv_t["var_name"]==i]["iv"].round(3).iloc[0]
+
+            ind = np.arange(woe_t_sample.shape[0])    # the x locations for the groups
+            width = 0.35       # the width of the bars: can also be len(x) sequence
+            
+            p1 = plt.bar(ind, woe_t_sample["pos_count"], width, color='#d62728')
+            p2 = plt.bar(ind, woe_t_sample["neg_count"], width, bottom=woe_t_sample["pos_count"])
+            
+            plt.ylabel('Obs cnt')
+            plt.title("Var - %s, iv = %.3f" % (i,iv_value))
+            xticks = woe_t_sample["var_cat"]+" \n woe: " + woe_t_sample["woe"].round(2).astype("string")
+            plt.xticks(ind, xticks)
+            plt.legend((p1[0], p2[0]), ('pos_count', 'neg_count'))
+            re = plt.setp(axes[ax_cnt].get_xticklabels(),rotation = 30 ,horizontalalignment = "right")
+            ax_cnt = ax_cnt+1
+
+            
     def gen_model(self, iv_lower_bound = 0.02,iv_upper_bound = 20,excluded_columns = []):
         columns_iv = self.iv_t[(self.iv_t["iv"]>=iv_lower_bound) & (self.iv_t["iv"]<=iv_upper_bound)]["var_name"]
         x = self.df_woe_replaced[columns_iv].drop(excluded_columns,axis = 1,errors = "ignore").reset_index(drop = True)
@@ -189,6 +218,97 @@ class fs_scorecard:
             self.df_scored = df_scored
             print "<name>.df_scored, <name>.woe_t_scored available"
 
+    def model_evaluate(self,test_x = None,test_y = None):
+                
+        df_binned_test,df_woe_replaced_test = self.get_woe_replaced_df(test_x)
+        
+        model_columns = self.model.exog_names
+        y_test_predict = self.model_result.predict(df_woe_replaced_test[model_columns])
+        
+        predict_true = pd.DataFrame()
+        predict_true["true"] = self.y_event
+        predict_true["predict"] = self.model_result.fittedvalues
+        
+        predict_true_test = pd.DataFrame()
+        predict_true_test["true"] = test_y.reset_index(drop= True)
+        predict_true_test["predict"] = y_test_predict.reset_index(drop= True)
+        
+        import sklearn.metrics as skmetric
+        
+        fpr ,tpr ,thresholds = skmetric.roc_curve(predict_true["true"],predict_true["predict"])
+        auc =  skmetric.auc(fpr, tpr)
+
+        fpr_test ,tpr_test ,thresholds_test = skmetric.roc_curve(predict_true_test["true"],predict_true_test["predict"])
+        auc_test =  skmetric.auc(fpr_test, tpr_test)
+        
+        print 'ROC-(AUC = %0.2f)' % auc
+        print 'ROC_TEST-(AUC = %0.2f)' % auc_test
+        
+        import matplotlib.pyplot as plt
+        
+        #roc_curve
+        
+        self.roc_plot = plt.figure()
+        
+        lw = 2
+        plt.plot(fpr, tpr, color='darkorange',
+                 lw=lw, label='ROC curve')
+        plt.plot(fpr_test, tpr_test, color='darkblue',
+                 lw=lw, label='Test ROC curve')
+        plt.plot([0, 1], [0, 1], color='navy', lw=lw, linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver operating characteristic-(AUC = %0.2f)' % auc)
+        plt.legend(loc="lower right")
+        
+        #ks_curve
+        
+        event_total = self.y_event.sum()
+        non_event_total = self.y_event.count() - self.y_event.sum()
+        
+        predict_true["score_rk"] = predict_true["predict"].rank(ascending = False
+                                                        ,method = "first")
+        group_size = round(predict_true.shape[0]/20)
+        predict_true["rk_group"] = (predict_true["score_rk"]/group_size).apply(np.ceil)
+
+        test_grp = predict_true.groupby("rk_group")["true"].agg([np.sum,pd.Series.count])\
+                    .rename(columns = {"sum":"event_cnt","count":"total_cnt"})\
+                    .reset_index()
+        test_grp["non_event_cnt"] = test_grp["total_cnt"] - test_grp["event_cnt"]
+        test_grp["event_cnt_cum"] = test_grp["event_cnt"].cumsum()
+        test_grp["non_event_cnt_cum"] = test_grp["non_event_cnt"].cumsum()
+
+        test_grp["event_rt"] = test_grp["event_cnt_cum"] / event_total
+        test_grp["none_event_rt"] = test_grp["non_event_cnt_cum"] / non_event_total
+
+        test_grp["ks_value"] = test_grp["event_rt"] - test_grp["none_event_rt"]
+
+        ks_value = test_grp["ks_value"].max()
+        ks_position = test_grp[test_grp["ks_value"]==ks_value]["rk_group"].iloc[0]
+        print "ks_value: %0.2f" % ks_value
+        print "ks_position",ks_position
+
+        test_grp_2 = pd.DataFrame({
+            "rk_group":[0],
+            "event_rt":[0],
+            "none_event_rt":[0]}
+        ).append(test_grp)
+
+        self.ks_plot = plt.figure()
+
+        plt.plot(test_grp_2["rk_group"],test_grp_2["event_rt"],color = "darkorange")
+        plt.plot(test_grp_2["rk_group"],test_grp_2["none_event_rt"],color = "navy")
+        plt.plot([ks_position,ks_position],[0,1],color="red",linestyle = "--",
+                label = "KS_position")
+        plt.xlim([0,20])
+        plt.ylim([0,1.05])
+        plt.xlabel("grp")
+        plt.ylabel("rt")
+        plt.title("KS Curve - ks value %0.2f" % ks_value)
+        plt.legend(loc = "lower right")
+        
         
 
 
