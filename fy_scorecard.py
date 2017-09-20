@@ -122,9 +122,9 @@ class fs_scorecard:
         for i in df_binned.columns:
             df_woe_value = woe_t[woe_t["var_name"]==i][["var_cat","woe"]]
             df_woe_replaced[i] = df_binned.merge(df_woe_value,how="left",left_on=i,right_on="var_cat")["woe"]
-        self.df_woe_replaced = df_woe_replaced
-        self.df_binned = df_binned
         if input_x is None:
+            self.df_woe_replaced = df_woe_replaced
+            self.df_binned = df_binned
             print "<name>.df_woe_replaced, <name>.df_binned available"
         else:
             return df_binned,df_woe_replaced
@@ -149,19 +149,21 @@ class fs_scorecard:
             
             p1 = plt.bar(ind, woe_t_sample["pos_count"], width, color='#d62728')
             p2 = plt.bar(ind, woe_t_sample["neg_count"], width, bottom=woe_t_sample["pos_count"])
-            
+            plt.twinx()
+            p3 = plt.plot(ind,woe_t_sample["pos_count"]/woe_t_sample["cat_total_count"],'o-',color = "darkorange")
             plt.ylabel('Obs cnt')
             plt.title("Var - %s, iv = %.3f" % (i,iv_value))
             xticks = woe_t_sample["var_cat"]+" \n woe: " + woe_t_sample["woe"].round(2).astype("string")
             plt.xticks(ind, xticks)
-            plt.legend((p1[0], p2[0]), ('pos_count', 'neg_count'))
+            plt.legend((p1[0], p2[0],p3[0]), ('pos_count', 'neg_count','pos_rate'))
             re = plt.setp(axes[ax_cnt].get_xticklabels(),rotation = 30 ,horizontalalignment = "right")
             ax_cnt = ax_cnt+1
 
             
     def gen_model(self, iv_lower_bound = 0.02,iv_upper_bound = 20,excluded_columns = []):
         columns_iv = self.iv_t[(self.iv_t["iv"]>=iv_lower_bound) & (self.iv_t["iv"]<=iv_upper_bound)]["var_name"]
-        x = self.df_woe_replaced[columns_iv].drop(excluded_columns,axis = 1,errors = "ignore").reset_index(drop = True)
+        x = self.df_woe_replaced[columns_iv].drop(excluded_columns,axis = 1,errors = "ignore").reset_index(drop = True).copy()
+        x["__intercept"] = 1
         y = self.y.copy().reset_index(drop = True)
         y[y==self.event] = 1
         y[y<>self.event] = 0
@@ -206,9 +208,10 @@ class fs_scorecard:
             df_binned = self.df_binned
 
         for i in self.model.exog_names:
-        	print i 
-        	df_score_value = woe_t2[woe_t2["var_name"]==i][["var_cat","score"]]
-        	df_scored[i] = df_binned.merge(df_score_value,how="left",left_on=i,right_on="var_cat")["score"]
+            print i 
+            df_score_value = woe_t2[woe_t2["var_name"]==i][["var_cat","score"]]
+            if i<>"__intercept":
+                df_scored[i] = df_binned.merge(df_score_value,how="left",left_on=i,right_on="var_cat")["score"]
 
         df_scored["final_score"] = df_scored.sum(axis = 1) + base_score
         print df_scored["final_score"].describe()
@@ -219,10 +222,9 @@ class fs_scorecard:
             print "<name>.df_scored, <name>.woe_t_scored available"
 
     def model_evaluate(self,test_x = None,test_y = None):
-                
         df_binned_test,df_woe_replaced_test = self.get_woe_replaced_df(test_x)
-        
         model_columns = self.model.exog_names
+        df_woe_replaced_test["__intercept"] = 1
         y_test_predict = self.model_result.predict(df_woe_replaced_test[model_columns])
         
         predict_true = pd.DataFrame()
