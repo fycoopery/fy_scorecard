@@ -10,6 +10,9 @@ import numpy as np
 from pandas import ExcelWriter
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
+import math as mt
+import sklearn.metrics as skmetric
+import matplotlib.pyplot as plt
 
 class fs_scorecard:
     def __init__(self,x,y,event=1,workpath = "./"):
@@ -83,12 +86,13 @@ class fs_scorecard:
             df_temp["woe"] = np.log(df_temp["pos_count"]/total_pos_count / \
                             df_temp["p_ni"])
             woe_t = woe_t.append(df_temp)
+        woe_t["odds"] = woe_t["pos_count"]/woe_t["neg_count"]
         woe_t.loc[woe_t["woe"] >= self.max_woe,"woe"] = self.max_woe
         woe_t.loc[woe_t["woe"] <= self.min_woe,"woe"] = self.min_woe
         woe_t["iv_i"] = (woe_t["p_yi"] - woe_t["p_ni"])*woe_t["woe"]
         woe_t["p_y_total"] = pos_rt
         woe_show_cols = ['var_name','var_cat','cat_total_count',
-                         'pos_count','neg_count','p_ni',	"p_y_total",
+                         'pos_count','neg_count','p_ni',"p_y_total","odds",
                          'p_yi','woe','iv_i']
         woe_t = woe_t[woe_show_cols]
         woe_t["var_cat"]=woe_t["var_cat"].astype("string")
@@ -222,40 +226,36 @@ class fs_scorecard:
             print "<name>.df_scored, <name>.woe_t_scored available"
 
     def model_evaluate(self,test_x = None,test_y = None):
-        df_binned_test,df_woe_replaced_test = self.get_woe_replaced_df(test_x)
-        model_columns = self.model.exog_names
-        df_woe_replaced_test["__intercept"] = 1
-        y_test_predict = self.model_result.predict(df_woe_replaced_test[model_columns])
+    
+        if test_x is not None:
+            df_binned_test,df_woe_replaced_test = self.get_woe_replaced_df(test_x)
+            model_columns = self.model.exog_names
+            df_woe_replaced_test["__intercept"] = 1
+            y_test_predict = self.model_result.predict(df_woe_replaced_test[model_columns])
+            y = self.y_event
+            predict_true_test = pd.DataFrame()
+            predict_true_test["true"] = test_y.reset_index(drop= True)
+            predict_true_test["predict"] = y_test_predict.reset_index(drop= True)
+            fpr_test ,tpr_test ,thresholds_test = skmetric.roc_curve(predict_true_test["true"],predict_true_test["predict"])
+            auc_test =  skmetric.auc(fpr_test, tpr_test)
+            print 'ROC_TEST-(AUC = %0.2f)' % auc_test
         
         predict_true = pd.DataFrame()
         predict_true["true"] = self.y_event
         predict_true["predict"] = self.model_result.fittedvalues
-        
-        predict_true_test = pd.DataFrame()
-        predict_true_test["true"] = test_y.reset_index(drop= True)
-        predict_true_test["predict"] = y_test_predict.reset_index(drop= True)
-        
-        import sklearn.metrics as skmetric
-        
         fpr ,tpr ,thresholds = skmetric.roc_curve(predict_true["true"],predict_true["predict"])
-        auc =  skmetric.auc(fpr, tpr)
-
-        fpr_test ,tpr_test ,thresholds_test = skmetric.roc_curve(predict_true_test["true"],predict_true_test["predict"])
-        auc_test =  skmetric.auc(fpr_test, tpr_test)
-        
+        auc =  skmetric.auc(fpr, tpr)  
         print 'ROC-(AUC = %0.2f)' % auc
-        print 'ROC_TEST-(AUC = %0.2f)' % auc_test
-        
-        import matplotlib.pyplot as plt
-        
+
         #roc_curve
         
         self.roc_plot = plt.figure()
-        
+        self.roc_plot.set_size_inches(15,10)
         lw = 2
         plt.plot(fpr, tpr, color='darkorange',
                  lw=lw, label='ROC curve')
-        plt.plot(fpr_test, tpr_test, color='darkblue',
+        if test_x is not None:
+            plt.plot(fpr_test, tpr_test, color='darkblue',
                  lw=lw, label='Test ROC curve')
         plt.plot([0, 1], [0, 1], color='navy', lw=lw, linestyle='--')
         plt.xlim([0.0, 1.0])
@@ -299,7 +299,7 @@ class fs_scorecard:
         ).append(test_grp)
 
         self.ks_plot = plt.figure()
-
+        self.ks_plot.set_size_inches(15,10)
         plt.plot(test_grp_2["rk_group"],test_grp_2["event_rt"],color = "darkorange")
         plt.plot(test_grp_2["rk_group"],test_grp_2["none_event_rt"],color = "navy")
         plt.plot([ks_position,ks_position],[0,1],color="red",linestyle = "--",
@@ -310,8 +310,76 @@ class fs_scorecard:
         plt.ylabel("rt")
         plt.title("KS Curve - ks value %0.2f" % ks_value)
         plt.legend(loc = "lower right")
+
         
+        #lift chart
+        y = self.y_event
+        df_scored= self.df_scored.copy()
+        df_scored["score_rank"] = (df_scored["final_score"].rank(pct=True,ascending = True)*10).apply(mt.ceil)
+        df_test = pd.concat([df_scored["score_rank"],y.reset_index(drop=True),df_scored["final_score"]],axis = 1)
+        df_test_grp = df_test.groupby("score_rank")[y.name].agg([pd.Series.sum,pd.Series.count])
+        df_test_grp["pos_rt"] = df_test_grp["sum"] / df_test_grp["count"]
+        df_test_grp_2 = df_test.groupby("score_rank")["final_score"].agg([pd.Series.max,pd.Series.min])
+        df_test_grp_all = df_test_grp.merge(df_test_grp_2,left_index=True,
+                                            right_index=True).rename(columns = {
+            "sum":"pos_cnt",
+            "count": "total_cnt",
+            "max": "score_max",
+            "min": "score_min"
+        })
+        df_test_grp_all["cum_pos_cnt"] = df_test_grp_all["pos_cnt"].cumsum()
+        df_test_grp_all["cum_total_cnt"] = df_test_grp_all["total_cnt"].cumsum()
+        df_test_grp_all["cum_pos_rt"] = df_test_grp_all["cum_pos_cnt"]/df_test_grp_all["total_cnt"].cumsum()
+        total_pos_rt = (df_test_grp_all["pos_cnt"].sum()+0.0)/df_test_grp_all["total_cnt"].sum()
+
+        df_test_grp_all["decile_lift"] = df_test_grp_all["pos_rt"]/total_pos_rt
+        df_test_grp_all["cum_lift"] = df_test_grp_all["cum_pos_rt"]/total_pos_rt
+
+        fig,ax = plt.subplots()
+        plt.subplot(1,1,1)
+        fig.set_size_inches(15,10)
+        x_tick = df_test_grp_all.index
+        plt.plot(x_tick,df_test_grp_all["cum_lift"])
+        plt.plot(x_tick,df_test_grp_all["decile_lift"])
+        plt.plot(x_tick,[1]*df_test_grp_all.shape[0],label = "base_line")
+
+        for x,y in zip(x_tick,df_test_grp_all["cum_lift"]):
+            plt.text(x,y,"%.2f" % y)
+
+        for x,y in zip(x_tick,df_test_grp_all["decile_lift"]):
+            plt.text(x,y,"%.2f" % y)
+            
+        plt.title("Lift Chart")
+        plt.xticks(range(1,11),size='small')
+
+        plt.xlabel("Lift")
+        plt.ylabel("Decile")
+        self.lift_chart = fig
+        self.lift_t = df_test_grp_all
         
+        #Score Distribution
+        self.score_dist_chart, ax = plt.subplots(2,1)
+        self.score_dist_chart.set_size_inches(15,20)
+
+        plt.subplot(2,1,1)
+        plt.title("Score Distribution")
+        h1 = plt.hist(self.df_scored[self.y_event == 0 ]["final_score"]
+                ,histtype="stepfilled", bins=50, alpha=0.5, label = "neg")
+        plt.legend(loc = "upper left")
+        ax2 = plt.twinx()
+        h2 = plt.hist(self.df_scored[self.y_event == 1 ]["final_score"]
+                ,histtype="stepfilled", color = "r", bins=50, alpha=0.5, label = "pos")
+
+        plt.xlabel("Score")
+        plt.xlabel("Obs cnt")
+        ax2.legend(loc = "upper right")
+
+        plt.subplot(2,1,2)
+        plt.title("Score Distribution - All")
+        plt.hist(self.df_scored["final_score"]
+                ,histtype="stepfilled", bins=50, alpha=0.5, label = "total")
+                
+        print "<name>.roc_plot/ks_plot/lift_chart/score_dist_chart/lift_t available"
 
 
 print "FY Scorecard ready!"
