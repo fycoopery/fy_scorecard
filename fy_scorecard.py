@@ -191,8 +191,6 @@ class fs_scorecard:
         print "reverse_base_odds: ",reverse_base_odds
         print "base_rt: ",base_rt
         print "base_score: ",base_score
-        print "p: ",p
-        print "q: ",q
 
         #生成df_scored
         
@@ -212,7 +210,6 @@ class fs_scorecard:
             df_binned = self.df_binned
 
         for i in self.model.exog_names:
-            print i 
             df_score_value = woe_t2[woe_t2["var_name"]==i][["var_cat","score"]]
             if i<>"__intercept":
                 df_scored[i] = df_binned.merge(df_score_value,how="left",left_on=i,right_on="var_cat")["score"]
@@ -239,6 +236,8 @@ class fs_scorecard:
             fpr_test ,tpr_test ,thresholds_test = skmetric.roc_curve(predict_true_test["true"],predict_true_test["predict"])
             auc_test =  skmetric.auc(fpr_test, tpr_test)
             print 'ROC_TEST-(AUC = %0.2f)' % auc_test
+            
+            
         
         predict_true = pd.DataFrame()
         predict_true["true"] = self.y_event
@@ -313,49 +312,58 @@ class fs_scorecard:
 
         
         #lift chart
-        y = self.y_event
-        df_scored= self.df_scored.copy()
-        df_scored["score_rank"] = (df_scored["final_score"].rank(pct=True,ascending = True)*10).apply(mt.ceil)
-        df_test = pd.concat([df_scored["score_rank"],y.reset_index(drop=True),df_scored["final_score"]],axis = 1)
-        df_test_grp = df_test.groupby("score_rank")[y.name].agg([pd.Series.sum,pd.Series.count])
-        df_test_grp["pos_rt"] = df_test_grp["sum"] / df_test_grp["count"]
-        df_test_grp_2 = df_test.groupby("score_rank")["final_score"].agg([pd.Series.max,pd.Series.min])
-        df_test_grp_all = df_test_grp.merge(df_test_grp_2,left_index=True,
-                                            right_index=True).rename(columns = {
-            "sum":"pos_cnt",
-            "count": "total_cnt",
-            "max": "score_max",
-            "min": "score_min"
-        })
-        df_test_grp_all["cum_pos_cnt"] = df_test_grp_all["pos_cnt"].cumsum()
-        df_test_grp_all["cum_total_cnt"] = df_test_grp_all["total_cnt"].cumsum()
-        df_test_grp_all["cum_pos_rt"] = df_test_grp_all["cum_pos_cnt"]/df_test_grp_all["total_cnt"].cumsum()
-        total_pos_rt = (df_test_grp_all["pos_cnt"].sum()+0.0)/df_test_grp_all["total_cnt"].sum()
+        df_test_grp_all = self.gen_lift(self.df_scored,self.y_event)
+        if test_x is not None:
+            df_test_grp_all_test = self.gen_lift(self.gen_score(test_x),test_y)
+            fig,ax = plt.subplots(2,1)
+            plt.subplot(2,1,1)
+            fig.set_size_inches(15,20)
+            
+        else:
+            fig,ax = plt.subplots(1,1)
+            plt.subplot(1,1,1)
+            fig.set_size_inches(15,10)
+        
+        
 
-        df_test_grp_all["decile_lift"] = df_test_grp_all["pos_rt"]/total_pos_rt
-        df_test_grp_all["cum_lift"] = df_test_grp_all["cum_pos_rt"]/total_pos_rt
-
-        fig,ax = plt.subplots()
-        plt.subplot(1,1,1)
-        fig.set_size_inches(15,10)
         x_tick = df_test_grp_all.index
         plt.plot(x_tick,df_test_grp_all["cum_lift"])
         plt.plot(x_tick,df_test_grp_all["decile_lift"])
         plt.plot(x_tick,[1]*df_test_grp_all.shape[0],label = "base_line")
-
         for x,y in zip(x_tick,df_test_grp_all["cum_lift"]):
             plt.text(x,y,"%.2f" % y)
-
         for x,y in zip(x_tick,df_test_grp_all["decile_lift"]):
             plt.text(x,y,"%.2f" % y)
-            
         plt.title("Lift Chart")
         plt.xticks(range(1,11),size='small')
 
         plt.xlabel("Lift")
         plt.ylabel("Decile")
+        plt.legend()
+        
+        if test_x is not None:
+            plt.subplot(2,1,2)
+            x_tick = df_test_grp_all_test.index
+            plt.plot(x_tick,df_test_grp_all_test["cum_lift"])
+            plt.plot(x_tick,df_test_grp_all_test["decile_lift"])
+            plt.plot(x_tick,[1]*df_test_grp_all_test.shape[0],label = "base_line")
+            for x,y in zip(x_tick,df_test_grp_all_test["cum_lift"]):
+                plt.text(x,y,"%.2f" % y)
+            for x,y in zip(x_tick,df_test_grp_all_test["decile_lift"]):
+                plt.text(x,y,"%.2f" % y)
+            plt.title("Lift Chart - Test")
+            plt.xticks(range(1,11),size='small')
+
+            plt.xlabel("Lift")
+            plt.ylabel("Decile")
+            plt.legend()
+        
+        
         self.lift_chart = fig
         self.lift_t = df_test_grp_all
+        
+        
+        
         
         #Score Distribution
         self.score_dist_chart, ax = plt.subplots(2,1)
@@ -380,6 +388,32 @@ class fs_scorecard:
                 ,histtype="stepfilled", bins=50, alpha=0.5, label = "total")
                 
         print "<name>.roc_plot/ks_plot/lift_chart/score_dist_chart/lift_t available"
+
+    def gen_lift(self,df_scored,y_true):
+        y = y_true
+        df_scored= df_scored.copy()
+        df_scored["score_rank"] = (df_scored["final_score"].rank(pct=True,
+                                    ascending = True)*10).apply(mt.ceil)
+        df_test = pd.concat([df_scored[["score_rank","final_score"]],y.reset_index(drop=True)],axis = 1)
+        df_test_grp = df_test.groupby("score_rank")[y.name].agg([pd.Series.sum,pd.Series.count])
+        df_test_grp["pos_rt"] = df_test_grp["sum"] / df_test_grp["count"]
+        df_test_grp_2 = df_test.groupby("score_rank")["final_score"].agg([pd.Series.max,pd.Series.min])
+        df_test_grp_all = df_test_grp.merge(df_test_grp_2,left_index=True,
+                                            right_index=True).rename(columns = {
+            "sum":"pos_cnt",
+            "count": "total_cnt",
+            "max": "score_max",
+            "min": "score_min"
+        })
+        df_test_grp_all["cum_pos_cnt"] = df_test_grp_all["pos_cnt"].cumsum()
+        df_test_grp_all["cum_total_cnt"] = df_test_grp_all["total_cnt"].cumsum()
+        df_test_grp_all["cum_pos_rt"] = df_test_grp_all["cum_pos_cnt"]/df_test_grp_all["total_cnt"].cumsum()
+        total_pos_rt = (df_test_grp_all["pos_cnt"].sum()+0.0)/df_test_grp_all["total_cnt"].sum()
+
+        df_test_grp_all["decile_lift"] = df_test_grp_all["pos_rt"]/total_pos_rt
+        df_test_grp_all["cum_lift"] = df_test_grp_all["cum_pos_rt"]/total_pos_rt
+        return df_test_grp_all
+
 
 
 print "FY Scorecard ready!"
